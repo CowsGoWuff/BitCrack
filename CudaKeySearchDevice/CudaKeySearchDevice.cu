@@ -21,6 +21,9 @@ __constant__ unsigned int _INC_Y[8];
 
 __constant__ unsigned int *_CHAIN[1];
 
+__constant__ unsigned int _TARGET_PUBKEY[8] = { 0xb4a72e4a, 0xaa69ba04, 0xb80c6891, 0xdf01f50d, 0x191a65ec, 0xcc61e4e9, 0x862d1e42, 0x1ce815b3 };
+//__constant__ unsigned int _TARGET_PUBKEY[8] = { 0xdc6c9273, 0x4f925f9f, 0x88607afa, 0x26184554, 0x0c0768ab, 0x20dd5bc8, 0xcf9b43aa, 0x6bce911c };
+
 static unsigned int *_chainBufferPtr = NULL;
 
 
@@ -118,7 +121,7 @@ __device__ void hashPublicKeyCompressed(const unsigned int *x, unsigned int yPar
 }
 
 
-__device__ void setResultFound(int idx, bool compressed, unsigned int x[8], unsigned int y[8], unsigned int digest[5])
+__device__ void setResultFound(int idx, bool findAddress, bool compressed, unsigned int x[8], unsigned int y[8], unsigned int digest[5])
 {
     CudaDeviceResult r;
 
@@ -137,7 +140,7 @@ __device__ void setResultFound(int idx, bool compressed, unsigned int x[8], unsi
     atomicListAdd(&r, sizeof(r));
 }
 
-__device__ void doIteration(int pointsPerThread, int compression)
+__device__ void doIteration(int pointsPerThread, int compression, bool findAddress)
 {
     unsigned int *chain = _CHAIN[0];
     unsigned int *xPtr = ec::getXPtr();
@@ -148,28 +151,44 @@ __device__ void doIteration(int pointsPerThread, int compression)
     for(int i = 0; i < pointsPerThread; i++) {
         unsigned int x[8];
 
-        unsigned int digest[5];
-
         readInt(xPtr, i, x);
 
-        if(compression == PointCompressionType::UNCOMPRESSED || compression == PointCompressionType::BOTH) {
-            unsigned int y[8];
-            readInt(yPtr, i, y);
-
-            hashPublicKey(x, y, digest);
-
-            if(checkHash(digest)) {
-                setResultFound(i, false, x, y, digest);
-            }
-        }
-
-        if(compression == PointCompressionType::COMPRESSED || compression == PointCompressionType::BOTH) {
-            hashPublicKeyCompressed(x, readIntLSW(yPtr, i), digest);
-
-            if(checkHash(digest)) {
+        if (findAddress) {
+            unsigned int digest[5];
+            if (compression == PointCompressionType::UNCOMPRESSED || compression == PointCompressionType::BOTH) {
                 unsigned int y[8];
                 readInt(yPtr, i, y);
-                setResultFound(i, true, x, y, digest);
+
+                hashPublicKey(x, y, digest);
+
+                if (checkHash(digest)) {
+                    setResultFound(i, true, false, x, y, digest);
+                }
+            }
+
+            if (compression == PointCompressionType::COMPRESSED || compression == PointCompressionType::BOTH) {
+                hashPublicKeyCompressed(x, readIntLSW(yPtr, i), digest);
+
+                if (checkHash(digest)) {
+                    unsigned int y[8];
+                    readInt(yPtr, i, y);
+                    setResultFound(i, true, true, x, y, digest);
+                }
+            }
+        }
+        else {
+
+            bool equal = true;
+            for (int i = 0; i < 8; i++) {
+                equal &= (x[i] == _TARGET_PUBKEY[i]);
+            }
+            // todo: also check sign of y coordinate, whatever lazy
+            if (equal) {
+                unsigned int y[8];
+                unsigned int digest[5];
+                readInt(yPtr, i, y);
+                hashPublicKey(x, y, digest);
+                setResultFound(i, false, false, x, y, digest);
             }
         }
 
@@ -190,7 +209,7 @@ __device__ void doIteration(int pointsPerThread, int compression)
     }
 }
 
-__device__ void doIterationWithDouble(int pointsPerThread, int compression)
+__device__ void doIterationWithDouble(int pointsPerThread, int compression, bool findAddress)
 {
     unsigned int *chain = _CHAIN[0];
     unsigned int *xPtr = ec::getXPtr();
@@ -201,32 +220,49 @@ __device__ void doIterationWithDouble(int pointsPerThread, int compression)
     for(int i = 0; i < pointsPerThread; i++) {
         unsigned int x[8];
 
-        unsigned int digest[5];
 
         readInt(xPtr, i, x);
 
-        // uncompressed
-        if(compression == PointCompressionType::UNCOMPRESSED || compression == PointCompressionType::BOTH) {
-            unsigned int y[8];
-            readInt(yPtr, i, y);
-            hashPublicKey(x, y, digest);
-
-            if(checkHash(digest)) {
-                setResultFound(i, false, x, y, digest);
-            }
-        }
-
-        // compressed
-        if(compression == PointCompressionType::COMPRESSED || compression == PointCompressionType::BOTH) {
-
-            hashPublicKeyCompressed(x, readIntLSW(yPtr, i), digest);
-
-            if(checkHash(digest)) {
-
+        if (findAddress) {
+            unsigned int digest[5];
+            // uncompressed
+            if (compression == PointCompressionType::UNCOMPRESSED || compression == PointCompressionType::BOTH) {
                 unsigned int y[8];
                 readInt(yPtr, i, y);
+                hashPublicKey(x, y, digest);
 
-                setResultFound(i, true, x, y, digest);
+                if (checkHash(digest)) {
+                    setResultFound(i, true, false, x, y, digest);
+                }
+            }
+
+            // compressed
+            if (compression == PointCompressionType::COMPRESSED || compression == PointCompressionType::BOTH) {
+
+                hashPublicKeyCompressed(x, readIntLSW(yPtr, i), digest);
+
+                if (checkHash(digest)) {
+
+                    unsigned int y[8];
+                    readInt(yPtr, i, y);
+
+                    setResultFound(i, true, true, x, y, digest);
+                }
+            }
+        }
+        else {
+
+            bool equal = true;
+            for (int j = 0; j < 8; j++) {
+                equal &= (x[j] == _TARGET_PUBKEY[j]);
+            }
+            // todo: also check sign of y coordinate, whatever lazy
+            if (equal) {
+                unsigned int y[8];
+                unsigned int digest[5];
+                readInt(yPtr, i, y);
+                hashPublicKey(x, y, digest);
+                setResultFound(i, false, false, x, y, digest);
             }
         }
 
@@ -252,10 +288,12 @@ __device__ void doIterationWithDouble(int pointsPerThread, int compression)
 */
 __global__ void keyFinderKernel(int points, int compression)
 {
-    doIteration(points, compression);
+    bool findAddress = false;
+    doIteration(points, compression, findAddress);
 }
 
 __global__ void keyFinderKernelWithDouble(int points, int compression)
 {
-    doIterationWithDouble(points, compression);
+    bool findAddress = false;
+    doIterationWithDouble(points, compression, findAddress);
 }

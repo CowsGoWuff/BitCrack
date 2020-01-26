@@ -112,9 +112,13 @@ void statusCallback(KeySearchStatus info)
 
 	if(info.speed < 0.01) {
 		speedStr = "< 0.01 MKey/s";
-	} else {
-		speedStr = util::format("%.2f", info.speed) + " MKey/s";
 	}
+    else if (info.speed < 100) {
+		speedStr = util::format("%.3f", info.speed) + " MKey/s";
+    }
+    else {
+        speedStr = util::format("%.3f", info.speed / 1000) + " GKey/s";
+    }
 
 	std::string totalStr = "(" + util::formatThousands(_config.totalkeys + info.total) + " total)";
 
